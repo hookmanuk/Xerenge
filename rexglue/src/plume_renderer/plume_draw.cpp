@@ -7916,8 +7916,13 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         !vr_hud_split &&
         vr::MarkerDraw(snap.vs_hash, snap.ps_hash, snap.num_indices,
                        reinterpret_cast<const float*>(snap.vs_constants.data()));
-    if (vr::Stereo() && !vr_hud_split && !vr_marker && pass && pass->end && pass->begin && colour_target &&
-        vr::HudVertexShader(snap.vs_hash)) {
+    // Not inside the tiled scene (a 1280x256 band, see native_extent): an interface shader's draw there is part of the
+    // scene, before its other bands and the post-processing. Split at it, the headset got the scene unfinished, without
+    // its colour grading and glow - the crash event's fly-over went dark and grey for 6 s before car select, and a race
+    // start for a moment (Matt 2026-11-04).
+    const bool vr_scene_band = snap.d3d_target_height != 0 && snap.d3d_target_height < 720;
+    if (vr::Stereo() && !vr_hud_split && !vr_marker && !vr_scene_band && pass && pass->end && pass->begin &&
+        colour_target && vr::HudVertexShader(snap.vs_hash)) {
       vr_hud_split = true;
       pass->end(pass->context);
       vr::SplitAtInterface(list, colour_target, width, height);
@@ -7953,8 +7958,13 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
                     vr_hud_split)) {
       return;  // VR fork, development: SKIP
     }
-    if (vr::CockpitGlass(snap.ps_hash, reinterpret_cast<const float*>(snap.vs_constants.data()))) {
-      return;  // VR fork: the player car's glass, seen from inside (plume_vr.cpp)
+    // VR fork: the player car's glass, seen from inside (plume_vr.cpp)
+    const int vr_glass = vr_hud_split || vr::HudVertexShader(snap.vs_hash)
+                             ? 0  // not the interface's, which blends the same way
+                             : vr::CockpitGlass(snap.ps_hash, reinterpret_cast<const float*>(snap.vs_constants.data()),
+                                                snap.blend_control);
+    if (vr_glass == 1) {
+      return;
     }
     if ((vr_hud_split || vr::HudVertexShader(snap.vs_hash)) && memory && vr::DevLogging()) {  // VR fork, development
       const uint32_t addr = snap.d3d_stream_address[0], stride = snap.d3d_stream_stride[0];
@@ -8033,6 +8043,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     }
     uint32_t draw_color_mask = opaque_video ? 0xFu : snap.color_mask;
     if (vr_hud_split) draw_color_mask = vr::HudColorMask(draw_color_mask, blend_control);  // VR fork: coverage
+    if (vr_glass == 2) draw_color_mask = 0;  // VR fork: the player car's glass unseen
     // One line per distinct depth state seen. Whether a draw wants the depth
     // test is what separates the scene from the interface here, so it matters
     // a great deal whether that register is arriving at all, or arriving with
@@ -8142,7 +8153,8 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       pipeline = GetOrCreatePipeline(snap.vs_hash, snap.ps_hash, topology, blend_control,
                                      snap.rt1_bound ? draw_color_mask
                                                     : (draw_color_mask & 0xFu),
-                                     snap.depth_control, snap.alpha_test, snap.poly_offset, snap.cull);
+                                     vr_glass == 2 ? snap.depth_control & ~0x4u : snap.depth_control,  // VR fork
+                                     snap.alpha_test, snap.poly_offset, snap.cull);
       passthrough = pipeline == nullptr;
     }
     {

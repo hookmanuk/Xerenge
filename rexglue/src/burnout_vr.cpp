@@ -207,6 +207,7 @@ void PinCamera(uint8_t* base, uint32_t m) {
     g_game_view = GameView::kUnknown;
     g_pin.have_relative = false;
     g_pin.model_steps = 0;
+    g_car_model = 0;  // not the last race's car's seat till this one's is known (the default meanwhile)
 #ifdef _WIN32
     SetEnvironmentVariableA("XERENGE_VR_CARMODEL", nullptr);  // the last race's car's
     SetEnvironmentVariableA("XERENGE_VR_NO_MARKERS", nullptr);  // the last event's results
@@ -302,6 +303,23 @@ void PinCamera(uint8_t* base, uint32_t m) {
                                : 0;
     g_pin.model_steps = model && model == g_pin.model_seen ? g_pin.model_steps + 1 : 0;
     g_pin.model_seen = model;
+    // A car with a seat of its own (built in, or kept in xerenge.conf) has it at once, from the cockpit's first frame
+    // that names it: held for the half second, the eye sat at the last car's seat - above another car's roof, a white
+    // and black frame at the race's start (Matt 2026-11-04: race starts "show dark for a split second").
+    const auto own_seat = [](uint64_t m) {
+      for (const auto& car : kCarSeats) {
+        if (car.model == m) {
+          return true;
+        }
+      }
+      return !xerenge::settings::ConfString(fmt::format("vr_cockpit_offset_{:016X}", m), "").empty();
+    };
+    if (g_pin.model_steps == 0 && model && model != g_car_model.load() && own_seat(model)) {
+      g_car_model = model;
+      LoadSeat();
+      REXLOG_INFO("VR cockpit: car {:016X} (first seen), seat {:.3f} {:.3f} {:.3f}", model, g_seat[0].load(),
+                  g_seat[1].load(), g_seat[2].load());
+    }
     if (g_pin.model_steps == 30 && model != g_car_model.load()) {
       g_car_model = model;
       LoadSeat();

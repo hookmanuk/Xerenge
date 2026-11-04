@@ -754,15 +754,23 @@ void TurnCockpitWheel(uint64_t mesh_key, float* v, uint32_t count, uint32_t stri
   }
 }
 
-bool CockpitGlass(uint64_t ps_hash, const float* c) {
+int CockpitGlass(uint64_t ps_hash, const float* c, uint32_t blend_control) {
   constexpr uint64_t kGlassPs = 0x521C4D9D5E6CC77Aull;  // the cars' windows (found by leaving it out in the cockpit)
-  if (ps_hash != kGlassPs || !Stereo() || !g_cockpit_view) {
-    return false;
+  // The crash events' cars' (Swiss Roll's STOCK C170 MID): drawn, the view out was dark and smeared from the GO to the
+  // impact (Matt 2026-11-04); found the same way. And their windscreen, which has the body's own pixel shader
+  // (9F1DFF3494E11857) but is blended over what is behind it (RB_BLENDCONTROL colour SRC_ALPHA, ONE_MINUS_SRC_ALPHA):
+  // the car's own blended draws are its glass.
+  constexpr uint64_t kCrashCarGlassPs = 0xE5ED654FBF9AC092ull;
+  // Perspective geometry only: the interface blends so too, and at the car it went unseen (the race's HUD gone).
+  const bool perspective = std::fabs(c[12]) + std::fabs(c[13]) + std::fabs(c[14]) >= 1e-6f;
+  const bool blended = perspective && (blend_control & 0x1Fu) == 6u && ((blend_control >> 8) & 0x1Fu) == 7u;
+  if ((ps_hash != kGlassPs && ps_hash != kCrashCarGlassPs && !blended) || !Stereo() || !g_cockpit_view) {
+    return 0;
   }
   Interpolation& vi = g_interpolation;
   std::scoped_lock lock{vi.mutex};
   if (!vi.have_vp) {
-    return false;
+    return 0;
   }
   double world[16];
   WorldOf(vi.vp, vi.xyw_inverse, c, world);
@@ -782,7 +790,9 @@ bool CockpitGlass(uint64_t ps_hash, const float* c) {
                   by_depth);
     }
   }
-  return own;
+  // The others drawn, but unseen: left out they were left out of the car's model too, and the models learnt before (its
+  // seat is found by its model) changed - the seat lost, the eye above the roof.
+  return !own ? 0 : ps_hash == kGlassPs ? 1 : 2;
 }
 
 bool g_marker_run = true;  // the frame's 2D draws so far are all markers (BeginFrame)

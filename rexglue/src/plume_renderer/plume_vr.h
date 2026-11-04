@@ -89,7 +89,8 @@ bool InterpolateDraw(uint64_t vs_hash, uint64_t mesh_key, bool depth_tested, uin
 // In the cockpit view (C, burnout_vr.cpp): whether this draw is the player car's glass -
 // the windscreen and side windows, an opaque dark reflection from inside (Matt 2026-11-01: "make the windscreen/side
 // windows clear") - its pixel shader the cars' glass, its origin within 3 m of the eye. Left out.
-bool CockpitGlass(uint64_t ps_hash, const float* vs_constants);
+// 0 drawn as it is, 1 left out, 2 drawn unseen (no colour, no depth written).
+int CockpitGlass(uint64_t ps_hash, const float* vs_constants, uint32_t blend_control);
 // In the cockpit: whether a mesh is the player car's that has (or may have) its steering wheel in it - kept out of the
 // vertex cache, its vertices turned as they are unpacked (TurnCockpitWheel: positions `stride` floats apart, from `pos`).
 bool CockpitWheelMesh(uint64_t mesh_key);
