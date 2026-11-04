@@ -4429,6 +4429,14 @@ uint32_t PlumeGraphicsSystem::FramesToGenerate() {
   if ((!general && !CrashInterpolationEnabled()) || !swapchain_) {
     return 0;
   }
+  // VR fork: none in the headset. Its frames are already drawn between the logic steps (plume_vr.cpp), and Crash mode's
+  // frame between - the title's last frame and this one blended, put up first - went to the headset as a frame of its
+  // own: every other frame an older picture, and half the title's frames drawn with another frame's pose (the presents'
+  // queue: 452 of 900 own). The crash camera juddered back and forth (Matt 2026-11-04: "The camera judder old frames is
+  // the worst problem"). Without: 900 of 900, 72 Hz held, none refused.
+  if (vr::Stereo()) {
+    return 0;
+  }
   // The title's rate: sixty, or thirty in Crash mode (its clock says which).
   uint32_t vblanks = 1;
   if (const RexFrameClockProviderFn clock_provider = RexFrameClockProvider()) {
