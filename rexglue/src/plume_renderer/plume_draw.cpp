@@ -1693,6 +1693,43 @@ bool UntileGuestTexture(const rex::graphics::TextureInfo& info, const uint8_t* s
   std::vector<uint8_t> blocks(size_t(row_bytes) * block_h, 0);
   if (info.is_tiled) {
     const uint32_t tiled_size = aligned_w * rex::align(block_h, 32u) * bpb;
+    // A tiny tiled texture (16x16 texels or less, no packed mips) whose own blocks at the tile's origin are empty
+    // while its tile holds data elsewhere: Burnout's particle sprites (8x8 DXT3, pitch 128, fire and smoke) are
+    // stored 26 blocks along their tile - every one of them, whatever its page - and read from the origin they came
+    // out transparent black: the fire, smoke and embers never showed. Taken from the tile's first non-empty block.
+    if (!info.has_packed_mips && block_w <= 4 && block_h <= 4 && pack_x == 0 && pack_y == 0) {
+      const auto block_empty = [&](uint32_t bx, uint32_t by) {
+        const int32_t o = rex::graphics::texture_util::GetTiledOffset2D(int32_t(bx), int32_t(by), aligned_w, bpb_log2);
+        for (uint32_t i = 0; i < bpb; ++i) {
+          if (src[o + i] != 0) {
+            return false;
+          }
+        }
+        return true;
+      };
+      bool origin_empty = true;
+      for (uint32_t by = 0; by < block_h && origin_empty; ++by) {
+        for (uint32_t bx = 0; bx < block_w && origin_empty; ++bx) {
+          origin_empty = block_empty(bx, by);
+        }
+      }
+      if (origin_empty) {
+        for (uint32_t by = 0; by + block_h <= 32 && pack_x == 0 && pack_y == 0; ++by) {
+          for (uint32_t bx = 0; bx + block_w <= 32; ++bx) {
+            if (!block_empty(bx, by)) {
+              pack_x = int(bx);
+              pack_y = int(by);
+              static uint32_t told = 0;
+              if (told++ < 8) {
+                REXLOG_INFO("plume: tiny tiled texture {:08X} {}x{}: its data at block {},{} of its tile, not the origin",
+                            info.memory.base_address, width, height, bx, by);
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
     // In the tiled layout a run of 16 bytes along x - eight blocks of one or
     // two bytes, four of four, two of eight - from a multiple of its length
     // lies in one piece (worked through the address formula for every block
@@ -7228,6 +7265,13 @@ void PlumeDrawContext::FillSharedConstants(uint8_t* dst, const GuestDrawSnapshot
   float half_y = height ? shift(height, grid_h) : (1.0f / 720.0f);
   std::memcpy(dst + 280, &half_x, 4);
   std::memcpy(dst + 284, &half_y, 4);
+  // A point sprite's size, in guest pixels from its vertex shader, in ours (XenosRecomp's XENOS_POINT_SCALE): against
+  // the guest frame's height, not a tile band's (Burnout's sprites are drawn into the 1280x256 bands - against 256
+  // they came out 2.8 times too large), and in VR against the game's field of view.
+  const uint32_t guest_frame_h = std::max(grid_h, grid_w * 9 / 16);
+  const float point_scale =
+      (height && guest_frame_h ? float(height) / float(guest_frame_h) : 1.0f) * vr::PointSpriteScale();
+  std::memcpy(dst + 328, &point_scale, 4);
   if (vr::Stereo()) {  // VR fork: the eyes' clip shifts of perspective geometry (shader_common_stereo.h)
     const float left = vr::EyeShift(0), right = vr::EyeShift(1);
     std::memcpy(dst + 320, &left, 4);

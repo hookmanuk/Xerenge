@@ -1248,6 +1248,8 @@ REX_HOOK_RAW(sub_820FBE60) {
   __imp__sub_820FBE60(ctx, base);
 }
 
+float g_game_view_y = 0.f;  // the game's own view window's height on a 16:9 screen (see below)
+
 // RwCameraSetViewWindow (r3 the camera, r4 the window: x, y at distance 1): the headset's field of view for a posed
 // viewport, and the frame's pose for the headset.
 REX_HOOK_RAW(sub_8234ABC0) {
@@ -1260,6 +1262,14 @@ REX_HOOK_RAW(sub_8234ABC0) {
       REXLOG_INFO("VR camera: view window {:.4f} {:.4f} -> {:.4f} {:.4f}", LoadFloat(base, window),
                   LoadFloat(base, window + 4), t_tangents[1], t_tangents[2]);
     }
+#ifdef _WIN32
+    // The game's own field of view, as on a 16:9 screen (its x; its y follows the screen's shape): it sizes its point
+    // sprites in pixels for it (plume_vr.cpp PointSpriteScale).
+    if (const float game_y = LoadFloat(base, window) * (9.f / 16.f); game_y != g_game_view_y) {
+      g_game_view_y = game_y;
+      SetEnvironmentVariableA("XERENGE_VR_GAME_VIEW_Y", fmt::format("{:.5f}", game_y).c_str());
+    }
+#endif
     StoreFloat(base, window + 0, t_tangents[1]);
     StoreFloat(base, window + 4, t_tangents[2]);
     vr::SetFramePose(t_pose, t_tangents);

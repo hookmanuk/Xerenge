@@ -264,8 +264,14 @@ bool ViewSpaceDraw(const float* c) {
 float g_seat_offset[3] = {0.f, 0.f, 0.f};
 bool g_cockpit_view = false;  // the cockpit view (burnout_vr.cpp, the fourth number)
 
+// The game's own view window's height as on a 16:9 screen (burnout_vr.cpp, XERENGE_VR_GAME_VIEW_Y).
+float g_game_view_y = 0.f;
+
 void ReadSeatOffset() {
 #ifdef _WIN32
+  if (char view[32] = {}; GetEnvironmentVariableA("XERENGE_VR_GAME_VIEW_Y", view, sizeof(view)) > 0) {
+    g_game_view_y = std::strtof(view, nullptr);
+  }
   char text[96] = {};
   if (GetEnvironmentVariableA("XERENGE_VR_SEAT", text, sizeof(text)) > 0) {
     int cockpit = 0;
@@ -1750,6 +1756,16 @@ void BeginFrame() {
 }
 
 bool InterfaceSplit() { return g_active && g_split; }
+
+float PointSpriteScale() {
+  // The game sizes its point sprites in pixels for its own field of view (gParams 15.12 in both, flat and VR); the
+  // headset's is wider (its view window 1.4 high against the game's 0.4-0.8), so at the same size in pixels its fire,
+  // smoke and dust covered two or three times the angle, piled up additively far too bright (Matt 2026-11-04).
+  if (!Stereo() || g_game_view_y <= 0.f || g_frame.tangents[2] <= 0.f) {
+    return 1.f;
+  }
+  return g_game_view_y / g_frame.tangents[2];
+}
 
 void SplitAtInterface(plume::RenderCommandList* list, plume::RenderTexture* target, uint32_t width, uint32_t height) {
   static const bool off = std::getenv("XERENGE_VR_HUD_LAYER") && std::getenv("XERENGE_VR_HUD_LAYER")[0] == '0';

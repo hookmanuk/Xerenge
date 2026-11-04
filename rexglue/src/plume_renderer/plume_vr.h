@@ -53,6 +53,8 @@ bool DevLogging();
 // like the marked interface - the pause menu, not always marked, was stretched over a 3840x4320 eye (Matt 2026-10-31:
 // "The pause menu is too tall").
 bool InterfaceSplit();
+// A point sprite's size against the scene's in VR: the game's field of view over the headset's (1 flat).
+float PointSpriteScale();
 
 // The race's markers over the other cars (blue triangles and their outlines: the 2D shader, gPosOffset c0 with the car's
 // depth-buffer value in z where the interface has ~0) were on the HUD sheet, at its distance whatever the car's (Matt
