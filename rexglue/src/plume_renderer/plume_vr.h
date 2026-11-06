@@ -55,6 +55,9 @@ bool DevLogging();
 bool InterfaceSplit();
 // A point sprite's size against the scene's in VR: the game's field of view over the headset's (1 flat).
 float PointSpriteScale();
+// A screen-space draw's eye shift per unit of its z (shared byte 332, shader_common_stereo.h): Burnout builds its
+// smoke, glass and debris quads on the CPU in pixels with z = 0.5 / distance (1 / the near plane, 2); 0 flat.
+float ScreenSpaceDepthShift();
 
 // The race's markers over the other cars (blue triangles and their outlines: the 2D shader, gPosOffset c0 with the car's
 // depth-buffer value in z where the interface has ~0) were on the HUD sheet, at its distance whatever the car's (Matt

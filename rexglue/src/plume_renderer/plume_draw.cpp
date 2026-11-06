@@ -7277,6 +7277,28 @@ void PlumeDrawContext::FillSharedConstants(uint8_t* dst, const GuestDrawSnapshot
     std::memcpy(dst + 320, &left, 4);
     std::memcpy(dst + 324, &right, 4);
   }
+  // Screen-space draws: the viewport transform off (PA_CL_VTE_CNTL's scale and offset bits clear), the vertex shader's
+  // position in the target's pixels and z straight to depth (XenosRecomp's XERENGE_SCREEN_TO_CLIP). Burnout draws its
+  // billboard smoke, glass, debris and explosion smoke so (sub_8214C118, vertex shaders 2EB5EF5854FD98EC and
+  // 7CECE80AA19923DA); taken as clip space they landed hundreds of screens away and were never seen (Matt: "where are
+  // the flames?"). The Direct3D draws only, not those over a resolved copy (FillVertices puts those into clip space
+  // itself), against the guest frame (a 1280x256 tile band is the whole 1280x720 frame); z through the viewport's
+  // flipped depth range (use_viewport) as the guest's went straight in. XERENGE_SCREEN_SPACE=0: not.
+  {
+    static const bool off = std::getenv("XERENGE_SCREEN_SPACE") && std::getenv("XERENGE_SCREEN_SPACE")[0] == '0';
+    const uint32_t screen = !off && (snap.vte_cntl & 0x3Fu) == 0 && snap.d3d_vertex_buffer != 0 &&
+                                    !ReadsResolvedCopy(snap, false) && grid_w != 0
+                                ? 1u
+                                : 0u;
+    std::memcpy(dst + 336, &screen, 4);
+    if (screen) {
+      const float frame_w = float(grid_w), frame_h = float(guest_frame_h);
+      const float k[6] = {2.0f / frame_w, -2.0f / frame_h, -1.0f, 1.0f, -1.0f, 1.0f};
+      std::memcpy(dst + 340, k, sizeof(k));
+      const float depth = vr::ScreenSpaceDepthShift();  // VR fork: each eye's shift per unit of z
+      std::memcpy(dst + 332, &depth, 4);
+    }
+  }
   float alpha = snap.alpha_test ? snap.alpha_ref : 0.0f;
   std::memcpy(dst + 308, &alpha, 4);
 }
@@ -9033,6 +9055,9 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       continue;
     }
     const GuestDrawSnapshot& snap = draws[snap_index];
+    if (snap.is_clear && snap.clear_effects) {
+      continue;  // VR fork: the effects buffer's clear - its draws go over the frame (plume_graphics_system.cpp)
+    }
     if (!snap.is_resolve) {
       // Any draw or clear, made or refused, counts as a write: so the first copy
       // after the pass reopens is never taken for a repeat, which the area

@@ -51,6 +51,8 @@ extern "C" void __imp__sub_8234ABC0(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_8259C328(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_8259C400(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_825AFE90(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82164220(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8214E178(PPCContext& __restrict, uint8_t*);
 
 namespace vr = rex::ui::vulkan::vr;
 bool XerengeLogicClock(double& state_steps, double& real_steps);
@@ -261,6 +263,19 @@ void PinCamera(uint8_t* base, uint32_t m) {
     const float clock = LoadFloat(base, kRaceClock);
     if (const bool on = have_car && clock > 0.f; g_race_on.exchange(on) != on) {
       REXLOG_INFO("VR: the race {} (its clock {:.3f} s)", on ? "on" : "off", clock);
+    }
+    // For plume's markers (plume_vr.cpp MarkerDraw), as XERENGE_VR_RACING: the event running and not paused - a crash
+    // event's TARGET label is a marker without the rivals' triangle, and only here can that be told from the pause
+    // menu's panels, which carry the last marker's depth value.
+    {
+      static int racing_was = -1;
+      const int racing = have_car && clock > 0.f && *xerenge::GuestPointer(base, kRacePaused) == 0 ? 1 : 0;
+      if (racing != racing_was) {
+        racing_was = racing;
+#ifdef _WIN32
+        SetEnvironmentVariableA("XERENGE_VR_RACING", racing ? "1" : nullptr);
+#endif
+      }
     }
     if (chase || held || bumper) {
       g_view_seen_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1107,6 +1122,10 @@ REX_HOOK_RAW(sub_825AFE90) {
   }
 }
 
+constexpr uint32_t kViewMatrix = 0x82923EE0u;  // the renderer's view matrix (head-turned)
+constexpr uint32_t kSparkViewRing = 0x82A47F00u;
+float g_drawn_camera[12];  // the frame's camera as drawn, before the head's turn (sub_82164220)
+bool g_drawn_camera_set = false;
 REX_HOOK_RAW(sub_820FBE60) {
   const uint32_t lr = uint32_t(ctx.lr);
   static const bool frame_log = std::getenv("XERENGE_VR_FRAMELOG") != nullptr;
@@ -1215,6 +1234,8 @@ REX_HOOK_RAW(sub_820FBE60) {
           drawn_camera[i] = LoadFloat(base, copy + 16 * (i / 3) + 4 * (i % 3));
         }
         vr::NoteFrameCameras(logic_camera, drawn_camera);  // the race's markers (plume_vr.cpp PlaceMarker)
+        std::memcpy(g_drawn_camera, drawn_camera, sizeof(g_drawn_camera));
+        g_drawn_camera_set = true;
         FrameMarkerCamera(logic_camera);
         std::memcpy(interpolated, xerenge::GuestPointer(base, copy), 128);
       } else {
@@ -1252,6 +1273,55 @@ float g_game_view_y = 0.f;  // the game's own view window's height on a 16:9 scr
 
 // RwCameraSetViewWindow (r3 the camera, r4 the window: x, y at distance 1): the headset's field of view for a posed
 // viewport, and the frame's pose for the headset.
+// The sparks' trails (CB4SparkArray): sub_82164220 keeps a history of the renderer's view matrix, 16 samples of 80 bytes a
+// player from 0x82A47F00 (the matrix, 64 bytes, then its time), and each streak is a spark's world position through those
+// samples, built on the CPU in view space. That matrix is the head-turned one, so every sample held the head's pose at
+// its moment - and plume turns the whole draw by the frame's pose as well (TurnViewSpaceDraw), which a paused test could
+// not show: the sparks moved with a turning head and sat off their wreck by the head's angle (Matt 2026-11-06, the head
+// held at +20 and -20 through a crash: sparks right and left of the wreck). Each new sample is the game's own view: the
+// frame's camera as drawn, without the head. XERENGE_VR_SPARK_RING=0: as the game keeps it.
+static void UnposeSparkRing(uint8_t* base, uint32_t player, const uint8_t (&posed)[64]) {
+  static const bool off = std::getenv("XERENGE_VR_SPARK_RING") && std::getenv("XERENGE_VR_SPARK_RING")[0] == '0';
+  if (off || !vr::Active() || !g_drawn_camera_set || player >= 4) {
+    return;
+  }
+  // Rows of view axes as columns: x the camera's right negated (RenderWare's view space), y up, z at; translation -p.axis.
+  const float* d = g_drawn_camera;
+  const float axis[3][3] = {{-d[0], -d[1], -d[2]}, {d[3], d[4], d[5]}, {d[6], d[7], d[8]}};
+  float own[16];
+  for (int c = 0; c < 3; ++c) {
+    for (int r = 0; r < 3; ++r) {
+      own[r * 4 + c] = axis[c][r];
+    }
+    own[c * 4 + 3] = 0.f;
+    own[12 + c] = -(d[9] * axis[c][0] + d[10] * axis[c][1] + d[11] * axis[c][2]);
+  }
+  own[15] = 1.f;
+  for (uint32_t sample = 0; sample < 16; ++sample) {
+    const uint32_t at = kSparkViewRing + player * 1280 + sample * 80;
+    if (std::memcmp(xerenge::GuestPointer(base, at), posed, sizeof(posed)) == 0) {
+      for (uint32_t k = 0; k < 16; ++k) {
+        StoreFloat(base, at + k * 4, own[k]);
+      }
+    }
+  }
+}
+
+REX_HOOK_RAW(sub_82164220) {  // the ring's new sample
+  const uint32_t player = ctx.r3.u32;
+  uint8_t posed[64];
+  std::memcpy(posed, xerenge::GuestPointer(base, kViewMatrix), sizeof(posed));
+  __imp__sub_82164220(ctx, base);
+  UnposeSparkRing(base, player, posed);
+}
+
+REX_HOOK_RAW(sub_8214E178) {  // the ring filled with the current matrix (the player's, by the global sub_82164220 sets)
+  uint8_t posed[64];
+  std::memcpy(posed, xerenge::GuestPointer(base, kViewMatrix), sizeof(posed));
+  __imp__sub_8214E178(ctx, base);
+  UnposeSparkRing(base, xerenge::LoadGuestU32(base, 0x8291EF98u), posed);
+}
+
 REX_HOOK_RAW(sub_8234ABC0) {
   if (uint32_t(ctx.lr) == kViewWindowCaller && t_posed && vr::Active()) {
     t_posed = false;
@@ -1264,10 +1334,27 @@ REX_HOOK_RAW(sub_8234ABC0) {
     }
 #ifdef _WIN32
     // The game's own field of view, as on a 16:9 screen (its x; its y follows the screen's shape): it sizes its point
-    // sprites in pixels for it (plume_vr.cpp PointSpriteScale).
-    if (const float game_y = LoadFloat(base, window) * (9.f / 16.f); game_y != g_game_view_y) {
+    // sprites in pixels for it (plume_vr.cpp PointSpriteScale). Never narrower than the race's (1.1975): the crash and
+    // Crashbreaker shots zoom in to 0.69 and the sprites, sized for the zoomed screen, came out half size in the headset,
+    // which does not zoom (Matt 2026-11-05: "the particles are all tiny"). XERENGE_VR_SPRITE_WINDOW: that floor.
+    static const float floor_window = [] {
+      const char* v = std::getenv("XERENGE_VR_SPRITE_WINDOW");
+      return v ? float(std::atof(v)) : 1.1975f;
+    }();
+    if (const float game_y = std::max(LoadFloat(base, window), floor_window) * (9.f / 16.f); game_y != g_game_view_y) {
       g_game_view_y = game_y;
       SetEnvironmentVariableA("XERENGE_VR_GAME_VIEW_Y", fmt::format("{:.5f}", game_y).c_str());
+    }
+    // And as it stands, zoomed or not: the game projects its markers with this, not the headset's window put in below
+    // (plume_vr.cpp PlaceMarker; the crash shots' 0.69 put a crash event's TARGET label twice too far from the middle).
+    {
+      static float last_window[2] = {};
+      const float wx = LoadFloat(base, window), wy = LoadFloat(base, window + 4);
+      if (wx != last_window[0] || wy != last_window[1]) {
+        last_window[0] = wx;
+        last_window[1] = wy;
+        SetEnvironmentVariableA("XERENGE_VR_GAME_WINDOW", fmt::format("{:.5f} {:.5f}", wx, wy).c_str());
+      }
     }
 #endif
     StoreFloat(base, window + 0, t_tangents[1]);

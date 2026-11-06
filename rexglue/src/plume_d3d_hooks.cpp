@@ -763,6 +763,7 @@ struct D3DRenderState {
   uint32_t vertex_declaration = 0;
   uint32_t index_buffer = 0;
   uint32_t render_target = 0;
+  uint32_t render_targets[4] = {};  // VR fork: every slot (the effects buffer is slot 2 alone)
   D3DStream streams[4];
   uint32_t textures[16] = {};
 };
@@ -1075,9 +1076,13 @@ REX_HOOK_RAW(D3DDevice_ClearF) {
   // Clearing the reflection or glow target must not reach the frame's depth
   // buffer - there is only one here, and it would be wiped mid-scene.
   uint32_t target = 0;
+  bool effects_target = false;
   {
     std::lock_guard lock(g_state_mutex);
     target = g_state.render_target;
+    // VR fork: Burnout's effects buffer (an 800x368 target bound alone at slot 2: burning wrecks, explosions) - its
+    // clear is that buffer's (plume_draw.cpp), not the frame's.
+    effects_target = target == 0 && g_state.render_targets[1] == 0 && g_state.render_targets[2] != 0;
   }
   const bool is_main_target = (SurfaceWidth(target) >= 1280);
   auto* graphics = DrawingIntoFrame(target) ? ActiveGraphicsSystem() : nullptr;
@@ -1111,6 +1116,9 @@ REX_HOOK_RAW(D3DDevice_ClearF) {
         flags &= ~0x10u;
       }
     }
+    if (effects_target) {
+      flags = (ctx.r4.u32 & 0x0Fu) | 0x80000000u;  // colour only: drawn against the frame's depth
+    }
     graphics->NoteGuestClearColor(flags, color, whole_target,
                                   static_cast<float>(ctx.f1.f64));
   } else if (graphics) {
@@ -1118,6 +1126,7 @@ REX_HOOK_RAW(D3DDevice_ClearF) {
   }
   __imp__D3DDevice_ClearF(ctx, base);
 }
+
 
 REX_HOOK_RAW(D3DDevice_DrawIndexedVertices) {
   Trace(fmt::format("DrawIndexed prim={} rt={:08X}", ctx.r4.u32, CurrentRenderTarget()));
@@ -1464,6 +1473,9 @@ REX_HOOK_RAW(D3DDevice_SetRenderTarget) {
     // and every draw after it was routed away from the screen.
     if (ctx.r4.u32 == 0) {
       g_state.render_target = ctx.r5.u32;
+    }
+    if (ctx.r4.u32 < 4) {
+      g_state.render_targets[ctx.r4.u32] = ctx.r5.u32;
     }
   }
   __imp__D3DDevice_SetRenderTarget(ctx, base);

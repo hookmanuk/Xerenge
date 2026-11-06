@@ -60,6 +60,7 @@ struct FramePose {
   float logic_camera[12]{}, drawn_camera[12]{};
   bool marker_camera_set = false;  // in the cockpit: the game's own camera, the markers projected with it
   float marker_camera[12]{};
+  float game_window[2]{};  // the game's own view window (burnout_vr.cpp): what it projects the markers with
 };
 std::mutex g_pose_mutex;
 std::deque<FramePose> g_poses;  // presented frames' poses, in order, for the submissions
@@ -184,6 +185,11 @@ FramePose TakeBuiltFrame() {
     float* m = frame.marker_camera;
     frame.marker_camera_set = std::sscanf(text, "%f %f %f %f %f %f %f %f %f %f %f %f", &m[0], &m[1], &m[2], &m[3],
                                           &m[4], &m[5], &m[6], &m[7], &m[8], &m[9], &m[10], &m[11]) == 12;
+  }
+  if (char text[64] = {}; GetEnvironmentVariableA("XERENGE_VR_GAME_WINDOW", text, sizeof(text)) > 0) {
+    if (std::sscanf(text, "%f %f", &frame.game_window[0], &frame.game_window[1]) != 2) {
+      frame.game_window[0] = frame.game_window[1] = 0.f;
+    }
   }
 #endif
   frame.posed = xr::TakeCameraPose(*reinterpret_cast<float(*)[16]>(frame.pose),
@@ -801,9 +807,11 @@ int CockpitGlass(uint64_t ps_hash, const float* c, uint32_t blend_control) {
   return !own ? 0 : ps_hash == kGlassPs ? 1 : 2;
 }
 
+
 bool g_marker_run = true;  // the frame's 2D draws so far are all markers (BeginFrame)
 bool g_marker_started = false;  // and the first of them was a triangle
 bool g_markers_off = false;  // a screen after an event (burnout_vr.cpp XerengeVrScreen): no markers (BeginFrame)
+bool g_racing = false;  // the event running, not paused (burnout_vr.cpp PinCamera, XERENGE_VR_RACING; BeginFrame)
 
 bool MarkerDraw(uint64_t vs_hash, uint64_t ps_hash, uint32_t count, const float* c) {
   static const bool off = std::getenv("XERENGE_VR_MARKERS") && std::getenv("XERENGE_VR_MARKERS")[0] == '0';
@@ -815,8 +823,21 @@ bool MarkerDraw(uint64_t vs_hash, uint64_t ps_hash, uint32_t count, const float*
   // HUD (z ~0) or the pause menu (textured) - the game leaves z as the last marker set it, and the pause menu's panels
   // carried it.
   constexpr uint64_t kFlatColourPs = 0x6EB945B547506423ull;
-  const bool marker = ps_hash == kFlatColourPs && std::fabs(c[3] - 1.f) < 1e-5f && c[2] > 0.5f && c[2] < 1.f &&
-                      c[4] > 0.f && c[5] < 0.f && (g_marker_started || count == 3);
+  // A crash event's TARGET label (the car to take down; two draws, its box and its text) starts the frame without a
+  // triangle: taken while the event runs unpaused (g_racing), when no menu carries a stale depth value. Left to the
+  // HUD it floated in the HUD's box (Matt 2026-11-05: "it should be attached to some target car").
+  // XERENGE_VR_TARGET_MARKER=0: not.
+  static const bool target_off =
+      std::getenv("XERENGE_VR_TARGET_MARKER") && std::getenv("XERENGE_VR_TARGET_MARKER")[0] == '0';
+  // Paused, the label drawn the same (its first draw's size, as last seen running; the text's, so per language) stays.
+  static uint32_t label_count = 0;
+  const bool signature = ps_hash == kFlatColourPs && std::fabs(c[3] - 1.f) < 1e-5f && c[2] > 0.5f && c[2] < 1.f &&
+                         c[4] > 0.f && c[5] < 0.f;
+  const bool starts_label = !target_off && !g_marker_started && count != 3 && (g_racing || count == label_count);
+  if (signature && starts_label && g_racing) {
+    label_count = count;
+  }
+  const bool marker = signature && (g_marker_started || count == 3 || starts_label);
   g_marker_started = marker;
   g_marker_run = marker;
   return marker;
@@ -834,6 +855,17 @@ void PlaceMarker(float* c, const float* centre) {
   if (!(depth > 0.1f && depth < 100000.f)) {
     return;
   }
+  // One car's marker is several draws at one depth value (the TARGET label's two, its text split between them): all
+  // moved as its first was. Each by its own centre, they parted with the head turned (Matt's TARGET, yaw 20: "TARGE").
+  static struct {
+    uint64_t serial = 0;
+    float z = -1.f, dx = 0.f, dy = 0.f, depth = 0.f;
+    bool valid = false;
+  } same_car;
+  const float own_z = c[2];
+  const uint64_t own_serial = g_frame.serial;
+  const bool repeat_car = same_car.valid && same_car.serial == own_serial && same_car.z == own_z;
+  same_car.valid = false;
   // The game projects the markers with its own camera, not the head-turned one: its centre (as drawn) taken back to
   // the game's view space at that depth (the frame's symmetric field of view, as burnout_vr.cpp sets the camera's
   // view window), turned as the view-space draws are (TurnViewSpaceDraw), projected again; the marker moved by the
@@ -845,7 +877,14 @@ void PlaceMarker(float* c, const float* centre) {
     const float nx = centre[0] * c[4] + c[0], ny = centre[1] * c[5] + c[1];
     float p[16] = {sx, 0.f, 0.f, 0.f, 0.f, sy, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f, 0.f};
     TurnViewSpaceDraw(p);
-    float v[4] = {nx * depth / sx, ny * depth / sy, depth, 1.f};
+    // Taken back through the window the game projected it with: its own (the crash and Crashbreaker shots zoom it to
+    // half the race's), which the headset's replaced for the drawing. XERENGE_VR_MARKER_WINDOW=0: the headset's.
+    static const bool own_window =
+        !(std::getenv("XERENGE_VR_MARKER_WINDOW") && std::getenv("XERENGE_VR_MARKER_WINDOW")[0] == '0');
+    const bool has_window = own_window && frame.game_window[0] > 0.f && frame.game_window[1] > 0.f;
+    const float ux = has_window ? frame.game_window[0] : frame.tangents[1];
+    const float uy = has_window ? frame.game_window[1] : frame.tangents[2];
+    float v[4] = {nx * depth * ux, ny * depth * uy, depth, 1.f};
     // Projected with the logic state's camera; the frame is drawn between states (the chase camera swinging round a
     // corner: a far marker cars to the side of its car, Matt 2026-10-31). Through the world into the drawn camera's
     // view space (axis i = sigma_i row i). XERENGE_VR_MARKER_CAMERA=0: not.
@@ -915,9 +954,20 @@ void PlaceMarker(float* c, const float* centre) {
                     std::atan2(-frame.pose[8], frame.pose[10]) * 57.29578f, bx, by, best_w);
       }
     }
-    if (clip[3] > 0.1f) {
-      c[0] += clip[0] / clip[3] - nx;
-      c[1] += clip[1] / clip[3] - ny;
+    if (repeat_car) {
+      c[0] += same_car.dx;
+      c[1] += same_car.dy;
+      depth = same_car.depth;
+      same_car.valid = true;
+    } else if (clip[3] > 0.1f) {
+      same_car.dx = clip[0] / clip[3] - nx;
+      same_car.dy = clip[1] / clip[3] - ny;
+      same_car.depth = clip[3];
+      same_car.z = own_z;
+      same_car.serial = own_serial;
+      same_car.valid = true;
+      c[0] += same_car.dx;
+      c[1] += same_car.dy;
       depth = clip[3];
     }
   } else if (static int unknown = 0; unknown < 4) {
@@ -1725,6 +1775,7 @@ void BeginFrame() {
 #ifdef _WIN32
   char none[4] = {};
   g_markers_off = GetEnvironmentVariableA("XERENGE_VR_NO_MARKERS", none, sizeof(none)) > 0;
+  g_racing = GetEnvironmentVariableA("XERENGE_VR_RACING", none, sizeof(none)) > 0;
 #endif
   {
     std::scoped_lock lock{g_pose_mutex};
@@ -1765,6 +1816,17 @@ float PointSpriteScale() {
     return 1.f;
   }
   return g_game_view_y / g_frame.tangents[2];
+}
+
+float ScreenSpaceDepthShift() {
+  // Drawn at w 1 they had no parallax - both eyes alike, at the distance of the sky. A point at distance d moves by the
+  // eye's clip shift / d; the game's z is 1 - (zShift + zScale / d) = 0.0001 + 0.5 / d (sub_8214C118; the camera's near
+  // plane 0.5, far 10000). XERENGE_VR_PARTICLE_DEPTH: 1 / distance per unit of z (2; 0 turns it off).
+  static const float depth_scale = [] {
+    const char* v = std::getenv("XERENGE_VR_PARTICLE_DEPTH");
+    return v ? float(std::atof(v)) : 2.f;
+  }();
+  return Stereo() ? depth_scale : 0.f;
 }
 
 void SplitAtInterface(plume::RenderCommandList* list, plume::RenderTexture* target, uint32_t width, uint32_t height) {

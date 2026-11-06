@@ -1299,6 +1299,43 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
   snap.vport_yoffset = bits_to_float(gpu_registers_[0x2112]);
   snap.vport_zscale = bits_to_float(gpu_registers_[0x2113]);
   snap.vport_zoffset = bits_to_float(gpu_registers_[0x2114]);
+  // Burnout's crash particles (point sprites: glitter, dust, debris; vertex shader B60167394EEF80F1) test LESS with a
+  // depth bias towards the camera (0.6 against the scene's 0.5 near): written for a depth buffer whose near is 0, while
+  // the 360 build's scene is reversed (viewport z scale -1, GEQUAL). As the guest set it they showed only where more
+  // than a fifth behind geometry - glitter through the wreck's body and the road, none in front (Matt: "drawing in
+  // front of everything else"). The test mirrored, as for the reversed buffer: in front, the bias as meant.
+  // XERENGE_SPRITE_DEPTH=0: as the guest set it.
+  {
+    static const bool off = std::getenv("XERENGE_SPRITE_DEPTH") && std::getenv("XERENGE_SPRITE_DEPTH")[0] == '0';
+    const uint32_t zfunc = (snap.depth_control >> 4) & 7u;  // xenos::CompareFunction: LESS 1, LEQUAL 3
+    if (!off && snap.prim_type == 1u && snap.vport_zscale < 0.0f && (snap.depth_control & 6u) == 2u &&
+        (zfunc == 1u || zfunc == 3u)) {
+      snap.depth_control = (snap.depth_control & ~0x70u) | ((zfunc == 1u ? 4u : 6u) << 4);  // GREATER, GEQUAL
+    }
+  }
+  // VR fork: a draw into Burnout's effects buffer alone (render target 2: the burning wrecks' and explosions' fire,
+  // pixel shader 7A6DF6C1E26BB804, its colour 2 output its colour 0's): into the effects texture, by target 0's mask
+  // (plume_draw.cpp). Dropped before, as its target 0 mask is empty: no fire on the wrecks, flat and VR.
+  // XERENGE_EFFECTS_BUFFER=0: as before.
+  {
+    static const bool off = std::getenv("XERENGE_EFFECTS_BUFFER") && std::getenv("XERENGE_EFFECTS_BUFFER")[0] == '0';
+    if (!off && (snap.color_mask & 0xFFu) == 0 && (snap.color_mask & 0xF00u) != 0) {
+      snap.effects_draw = true;
+      snap.color_mask = (snap.color_mask >> 8) & 0xFu;
+      // Its blend is target 2's (RB_BLENDCONTROL2, 0x220A: the fire alpha-blended over the scene the console copies
+      // in first, its alpha written as is - the final pass takes the buffer where that alpha is above 0).
+      const uint32_t device = d3d_device_guest_.load(std::memory_order_relaxed);
+      if (snap.d3d_vertex_buffer != 0 && device != 0 && RangeReadable(memory_, device + kD3DRenderStateOffset, 0x2C)) {
+        uint32_t blend2 = 0;
+        CopyBeDwords(memory_, &blend2, device + kD3DRenderStateOffset + (0x220A - 0x2200) * 4, 1);
+        if (static int told = 0; told++ < 4) {
+          REXLOG_INFO("plume: effects buffer draw vs={:016X} blend 0 {:08X} -> 2 {:08X}", snap.vs_hash,
+                      snap.blend_control, blend2);
+        }
+        snap.blend_control = blend2;
+      }
+    }
+  }
   snap.valid = snap.vs_hash != 0 && snap.ps_hash != 0 && snap.num_indices != 0;
 
   uint64_t video_key = 0;
@@ -1536,6 +1573,10 @@ void PlumeGraphicsSystem::NoteGuestClearColor(uint32_t flags, const float color[
   }
   GuestDrawSnapshot marker;
   marker.is_clear = true;
+  if ((flags & 0x80000000u) != 0) {  // VR fork: the effects buffer's clear (plume_d3d_hooks.cpp)
+    marker.clear_effects = true;
+    flags &= 0xFFu;
+  }
   // A smaller target's size, packed into the high bits by the ClearF hook.
   if ((flags & 0x40000000u) != 0) {
     marker.clear_width = ((flags >> 8) & 0x7FFu) + 1;

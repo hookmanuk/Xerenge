@@ -288,6 +288,11 @@ struct GuestDrawSnapshot {
   // Likewise a marker, for where the title cleared its render target. Only
   // depth is acted on: the colour target is shared with the interface.
   bool is_clear = false;
+  // VR fork: Burnout's effects buffer (an 800x368 target bound alone at slot 2): its clear (left out), and the draws
+  // that write only it (RB_COLOR_MASK's render target 2 bits and RB_BLENDCONTROL2, moved to target 0's) - drawn over
+  // the frame, which a resolve of source 2 copies (plume_graphics_system.cpp).
+  bool clear_effects = false;
+  bool effects_draw = false;
   uint32_t clear_flags = 0;
   float clear_depth = 1.0f;
   float clear_color[4] = {0.0f, 0.0f, 0.0f, 0.0f};
