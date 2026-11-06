@@ -9,11 +9,27 @@ no CPU interpreter and no JIT.
 with the European ISO alone. Other dumps (the USA release, the beta, other
 regions) are not supported.
 
-## VR (0.4.9-vr-0.2)
+## VR (0.4.9-vr-0.3)
 
 This build plays Burnout Revenge in a VR headset through OpenXR (tested with
 SteamVR). Head tracking, stereo 3D, the HUD on its own panel and the car
 markers at their cars' depth all work in races, menus and replays.
+
+### What's new in 0.4.9-vr-0.3 (since 0.4.9-vr-0.2)
+
+- **Fire, smoke and dust.** The game's particles now show, at their right size
+  and brightness. Smoke, glass and debris sit at their proper depth in each eye.
+- **Explosions and burning wrecks.** The flames are visible and in the right
+  place, instead of appearing for a moment and vanishing.
+- **Sparks stay in the world.** The orange sparks from a crash no longer move
+  with your head: turn your head and they stay at the wreck.
+- **The TARGET label** sits above its car instead of floating in the HUD.
+- **Crash camera.** The crash camera no longer judders with old frames in the
+  headset: every frame now has its own head pose.
+- **Crash events.** The fly-over before car select and the first moment of a
+  race are no longer dark. The crash events' car has no glass in your way in the
+  cockpit view, and the cockpit has its seat from its first frame, without a
+  white and black frame at the GO.
 
 ### What's new in 0.4.9-vr-0.2 (since 0.4.9-vr-0.1)
 
